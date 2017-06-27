@@ -32,20 +32,25 @@
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
+
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <sched.h>
 #include <semaphore.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <unistd.h>
-#include <inttypes.h>
-#include <sched.h>
+
 #include "sha256.h"
 #include "sysendian.h"
 #include "rdtsc.h"
-
+#include "mysem.h"
 #include "libscrypt.h"
 
 static void blkcpy(void *, void *, size_t);
@@ -325,75 +330,65 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
 		blkcpy(&V[(i + 1) * (32 * r)], Y, 128 * r);
 
 		/* 4: X <-- H(X) */
-		blockmix_salsa8(Y, X, Z, r);
+        blockmix_salsa8(Y, X, Z, r);
 	}
 
-    sem_t *namedSemaphore, *unamedSemaphore;
-    sem_t *abarrierSemaphore, *bbarrierSemaphore;
-	if (rd == 0){
 
-        if ((abarrierSemaphore = sem_open("arr", O_CREAT, 0666, 0)) == SEM_FAILED){
-            perror("named semaphore initialization error");
-            return;
-        }
-        if ((bbarrierSemaphore = sem_open("brr", O_CREAT, 0666, 0)) == SEM_FAILED){
-            perror("named semaphore initialization error");
-            return;
-        }
-        if ((namedSemaphore = sem_open("psem", O_CREAT, 0666, 0)) == SEM_FAILED){
-            perror("named semaphore initialization error");
-            return;
-        }
-        if ((unamedSemaphore = sem_open("usem", O_CREAT, 0666, 0)) == SEM_FAILED){
-            perror("named semaphore initialization error");
-            return;
-        }
-
-        sem_post(namedSemaphore);
-        sem_wait(unamedSemaphore);
-
-        sem_close(namedSemaphore);
-        sem_close(unamedSemaphore);
-
-    }
-	/* 6: for i = 0 to N - 1 do */
     int no_of_rounds = 300;
-    sem_post(abarrierSemaphore);
-    sem_wait(bbarrierSemaphore);
 
+    //shared memory
+    key_t key;
+    int shmid;
+    volatile char *sync;
+
+    key = 4567;
+
+    /* sleep(2); */
+    if((shmid = shmget(key, 10, 0666)) < 0){ //memory creation
+        perror("library: error with shared memory.\n");
+        return 1;
+    }
+
+    sync = shmat(shmid, NULL, 0);
+    if(sync == (char*)-1){
+        perror("library: error with shared memory.\n");
+        return 1;
+    }
+
+    if(rd == 0){
+        notify_slave(sync);
+        wait_slave(sync);
+    }
+
+	/* 6: for i = 0 to N - 1 do */
     for (i = 0; i < N; i += 2) {
         /* 7: j <-- Integerify(X) mod N */
-        j = integerify(X, r) & (N - 1);
 
         /* 8: X <-- H(X \xor V_j), 128 * r = 1024*/
-        if(rd == 0 && i<no_of_rounds){
-            sem_post(abarrierSemaphore);
-            sem_wait(bbarrierSemaphore);
-        }
+        j = integerify(X, r) & (N - 1);
         blkxor(X, &V[j * (32 * r)], 128 * r);
-        if(rd == 0 && i<no_of_rounds){
-            sem_post(abarrierSemaphore);
-            sem_wait(bbarrierSemaphore);
-        }
         blockmix_salsa8(X, Y, Z, r);
+        if(rd == 0 && i<no_of_rounds){
+            notify_slave(sync);
+            wait_slave(sync);
+        }
 
         /* 7: j <-- Integerify(X) mod N */
-        j = integerify(Y, r) & (N - 1);
 
-        if(rd == 0 && i<no_of_rounds){
-            sem_post(abarrierSemaphore);
-            sem_wait(bbarrierSemaphore);
-        }
+        /* if(rd == 0 && i<no_of_rounds){ */
+        /*     notify_slave(sync); */
+        /*     wait_slave(sync); */
+        /*     /1* printf("server: %d\n",i+1); *1/ */
+        /* } */
+        j = integerify(Y, r) & (N - 1);
         blkxor(Y, &V[j * (32 * r)], 128 * r);
-        if(rd == 0 && i<no_of_rounds){
-            sem_post(abarrierSemaphore);
-            sem_wait(bbarrierSemaphore);
-        }
         blockmix_salsa8(Y, X, Z, r);
+        if(rd == 0 && i<no_of_rounds){
+            notify_slave(sync);
+            wait_slave(sync);
+        }
 
     }
-    sem_close(abarrierSemaphore);
-    sem_close(bbarrierSemaphore);
 
     /* 10: B' <-- X */
     for (k = 0; k < 32 * r; k++)

