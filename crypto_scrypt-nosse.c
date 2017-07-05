@@ -340,25 +340,27 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
     key_t key;
     int shmid;
     volatile char *sync;
+    uint64_t timings[600];
 
     key = 4567;
 
     /* sleep(2); */
     if((shmid = shmget(key, 10, 0666)) < 0){ //memory creation
         perror("library: error with shared memory.\n");
-        return 1;
+        return;
     }
 
     sync = shmat(shmid, NULL, 0);
     if(sync == (char*)-1){
         perror("library: error with shared memory.\n");
-        return 1;
+        return;
     }
 
     if(rd == 0){
         notify_slave(sync);
         wait_slave(sync);
     }
+    uint64_t a;
 
 	/* 6: for i = 0 to N - 1 do */
     for (i = 0; i < N; i += 2) {
@@ -367,11 +369,17 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
         /* 8: X <-- H(X \xor V_j), 128 * r = 1024*/
         j = integerify(X, r) & (N - 1);
         blkxor(X, &V[j * (32 * r)], 128 * r);
-        blockmix_salsa8(X, Y, Z, r);
         if(rd == 0 && i<no_of_rounds){
-            notify_slave(sync);
-            wait_slave(sync);
+            timings[i] = rdtsc();
+            /* notify_slave(sync); */
+            /* wait_slave(sync); */
         }
+        blockmix_salsa8(X, Y, Z, r);
+        /* printf("s: %lld\n",rdtsc()-a); */
+        /* if(rd == 0 && i<no_of_rounds){ */
+        /*     notify_slave(sync); */
+        /*     wait_slave(sync); */
+        /* } */
 
         /* 7: j <-- Integerify(X) mod N */
 
@@ -382,12 +390,30 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
         /* } */
         j = integerify(Y, r) & (N - 1);
         blkxor(Y, &V[j * (32 * r)], 128 * r);
-        blockmix_salsa8(Y, X, Z, r);
         if(rd == 0 && i<no_of_rounds){
+            timings[i+1] = rdtsc();
+            /* notify_slave(sync); */
+            /* wait_slave(sync); */
+        }
+        blockmix_salsa8(Y, X, Z, r);
+
+        if(rd == 0 && i==no_of_rounds){
             notify_slave(sync);
             wait_slave(sync);
         }
+        /* printf("s: %lld\n",rdtsc()-a); */
+        /* if(rd == 0 && i<no_of_rounds){ */
+        /*     notify_slave(sync); */
+        /*     wait_slave(sync); */
+        /* } */
 
+    }
+    if(rd == 0){
+        a = 0;
+        for(i=0; i<300; i++){
+            printf("s: %lld %lld\n", timings[i], timings[i]-a);
+            a = timings[i];
+        }
     }
 
     /* 10: B' <-- X */
