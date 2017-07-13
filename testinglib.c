@@ -31,7 +31,7 @@ void print_res(FILE* fp, uint16_t* res, int* rmap, int nsets){
 	int j = 0;
 	for (i = 0; i < 1; i++)
 	{
-		for (j = 0; j < L1_SETS; j++)
+		for (j = 0; j < L1_SETS; j+=4)
 		{
 			if (rmap[j] == -1)
 				fprintf(fp, "  0 ");
@@ -160,18 +160,18 @@ int main(int argv, char *argc[]){
             }
 
             if(fork() == 0){
-                cpu_set_t mask;
-                CPU_ZERO(&mask);
-                CPU_SET(4, &mask);
+                /* cpu_set_t mask; */
+                /* CPU_ZERO(&mask); */
+                /* CPU_SET(4, &mask); */
 
-                if(sched_setaffinity(0, sizeof(mask), &mask) != 0)
-                    perror("some error occurred while setting the affinity.\n");
-                while(*sync_amplifier == 0);
-                while(*sync_amplifier == 1){
-                    for(i = 0; i<3; i++){
-                        clflush((void*)addresses[i]);
-                    }
-                }
+                /* if(sched_setaffinity(0, sizeof(mask), &mask) != 0) */
+                /*     perror("some error occurred while setting the affinity.\n"); */
+                /* while(*sync_amplifier == 0); */
+                /* while(*sync_amplifier == 1){ */
+                /*     for(i = 0; i<3; i++){ */
+                /*         clflush((void*)addresses[i]); */
+                /*     } */
+                /* } */
                 exit(0);
             }
             else {
@@ -242,11 +242,15 @@ int main(int argv, char *argc[]){
 
             k = 0;
             uint64_t a;
-            uint64_t probe_timings[4*no_of_rounds];
-            wait_master(sync);
+            uint64_t probe_timings[no_of_rounds];
+            uint64_t probe_diff[no_of_rounds];
+            /* wait_master(sync); */
                 /* l1_probe(l1, res[k]); */
-            notify_master(sync);
+            /* notify_master(sync); */
             *sync_amplifier = 1;
+            wait_master(sync);
+            notify_master(sync);
+            i = 0;
             while(k<no_of_rounds){
                 /* wait_master(sync); */
                 /*     l1_probe(l1, res[k]); */
@@ -254,25 +258,56 @@ int main(int argv, char *argc[]){
 
                     /* printf("client: %d\n",k); */
                 /* wait_master(sync); */
-                delayloop(18500);
-                probe_timings[k] = rdtsc();
-                /* wait_master(sync); */
-                if(k%2==0)
+                /* delayloop(5750); */
+                j = 0;
+                /* while(j++<5750) i = i+j; */
+                if(k%60==0){
+                    wait_master(sync);
+                    probe_timings[k] = rdtsc();
                     l1_bprobe(l1, res[k]);
-                else
+                    notify_master(sync);
+                    j = 0;
+                    while(j++<3800) i = i+j;
+                    /* delayloop(6000); */
+
+                }else if(k%2==0){
+                    /* wait_master(sync); */
+                    probe_timings[k] = rdtsc();
+                    l1_bprobe(l1, res[k]);
+                    j = 0;
+                    while(j++<4090) i = i+j;
+                    /* notify_master(sync); */
+                    /* delayloop(6000); */
+
+                } else if(k%2==1){
+                    /* wait_master(sync); */
+                    probe_timings[k] = rdtsc();
                     l1_probe(l1, res[k]);
+                    j = 0;
+                    while(j++<4090) i = i+j;
+                    /* notify_master(sync); */
+                }
+                else {
+                    probe_timings[k] = rdtsc();
+                    l1_probe(l1, res[k]);
+                }
+
                 /* notify_master(sync); */
-                delayloop(18500);
+                a = rdtsc();
+                probe_diff[k] = a - probe_timings[k];
+                /* printf("%u \n", a-probe_timings[k]); */
                 /* notify_master(sync); */
+                /* delayloop(18500); */
                 k++;
             }
 
-            wait_master(sync);
-            notify_master(sync);
+            printf("%d\n",i);
+            /* wait_master(sync); */
+            /* notify_master(sync); */
             *sync_amplifier = 0;
             sleep(1);
             for(i=0; i<k; i++)
-                printf("p %lld\n", probe_timings[i]);
+                printf("p %lld %lld\n", probe_timings[i], probe_diff[i]);
 
             for(i=0; i<k; i++)
                 print_res(fp, res[i], rmap, nsets);

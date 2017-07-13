@@ -356,11 +356,16 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
         return;
     }
 
+    /* if(rd == 0){ */
+    /*     notify_slave(sync); */
+    /*     wait_slave(sync); */
+    /* } */
+    uint64_t a;
+
     if(rd == 0){
         notify_slave(sync);
         wait_slave(sync);
     }
-    uint64_t a;
 
 	/* 6: for i = 0 to N - 1 do */
     for (i = 0; i < N; i += 2) {
@@ -371,10 +376,16 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
         blkxor(X, &V[j * (32 * r)], 128 * r);
         if(rd == 0 && i<no_of_rounds){
             timings[i] = rdtsc();
+        }
+        blockmix_salsa8(X, Y, Z, r);
+        if(rd == 0 && i<no_of_rounds){
+            if(i%40==0){
+                notify_slave(sync);
+                wait_slave(sync);
+            }
             /* notify_slave(sync); */
             /* wait_slave(sync); */
         }
-        blockmix_salsa8(X, Y, Z, r);
         /* printf("s: %lld\n",rdtsc()-a); */
         /* if(rd == 0 && i<no_of_rounds){ */
         /*     notify_slave(sync); */
@@ -392,15 +403,18 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
         blkxor(Y, &V[j * (32 * r)], 128 * r);
         if(rd == 0 && i<no_of_rounds){
             timings[i+1] = rdtsc();
-            /* notify_slave(sync); */
-            /* wait_slave(sync); */
         }
         blockmix_salsa8(Y, X, Z, r);
+        /* if(rd == 0 && i<no_of_rounds){ */
+        /*     timings[i+1] = rdtsc(); */
+        /*     /1* notify_slave(sync); *1/ */
+        /*     /1* wait_slave(sync); *1/ */
+        /* } */
 
-        if(rd == 0 && i==no_of_rounds){
-            notify_slave(sync);
-            wait_slave(sync);
-        }
+        /* if(rd == 0 && i==no_of_rounds){ */
+        /*     notify_slave(sync); */
+        /*     wait_slave(sync); */
+        /* } */
         /* printf("s: %lld\n",rdtsc()-a); */
         /* if(rd == 0 && i<no_of_rounds){ */
         /*     notify_slave(sync); */
