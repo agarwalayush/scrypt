@@ -32,25 +32,20 @@
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
-
 #include <errno.h>
 #include <fcntl.h>
-#include <inttypes.h>
-#include <sched.h>
 #include <semaphore.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
-#include <sys/types.h>
-#include <sys/ipc.h>
-#include <sys/shm.h>
 #include <unistd.h>
-
+#include <inttypes.h>
+#include <sched.h>
 #include "sha256.h"
 #include "sysendian.h"
 #include "rdtsc.h"
-#include "mysem.h"
+
 #include "libscrypt.h"
 
 static void blkcpy(void *, void *, size_t);
@@ -293,7 +288,6 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
 
 	int i1;
 
-
 	l1pp_t l1 = l1_prepare();
 	int nsets = l1_getmonitoredset(l1, NULL, 0);
 	int *map = calloc(nsets, sizeof(int));
@@ -330,109 +324,53 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
 		blkcpy(&V[(i + 1) * (32 * r)], Y, 128 * r);
 
 		/* 4: X <-- H(X) */
-        blockmix_salsa8(Y, X, Z, r);
+		blockmix_salsa8(Y, X, Z, r);
 	}
 
-
+	/* 6: for i = 0 to N - 1 do */
     int no_of_rounds = 300;
 
-    //shared memory
-    key_t key;
-    int shmid;
-    volatile char *sync;
-    uint64_t timings[600];
-
-    key = 4567;
-
-    /* sleep(2); */
-    if((shmid = shmget(key, 10, 0666)) < 0){ //memory creation
-        perror("library: error with shared memory.\n");
-        return;
-    }
-
-    sync = shmat(shmid, NULL, 0);
-    if(sync == (char*)-1){
-        perror("library: error with shared memory.\n");
-        return;
-    }
-
-    /* if(rd == 0){ */
-    /*     notify_slave(sync); */
-    /*     wait_slave(sync); */
-    /* } */
-    uint64_t a;
-
-    if(rd == 0){
-        notify_slave(sync);
-        wait_slave(sync);
-    }
-
-	/* 6: for i = 0 to N - 1 do */
     for (i = 0; i < N; i += 2) {
         /* 7: j <-- Integerify(X) mod N */
-
-        /* 8: X <-- H(X \xor V_j), 128 * r = 1024*/
         j = integerify(X, r) & (N - 1);
+
+        if(rd == 0 && i<no_of_rounds){
+            l1_bprobe(l1, res);
+        }
         blkxor(X, &V[j * (32 * r)], 128 * r);
         if(rd == 0 && i<no_of_rounds){
-            timings[i] = rdtsc();
+            l1_probe(l1, res);
+            print_res(res, rmap, nsets);
         }
+
         blockmix_salsa8(X, Y, Z, r);
-        if(rd == 0 && i<no_of_rounds){
-            if(i%40==0){
-                notify_slave(sync);
-                wait_slave(sync);
-            }
-            /* notify_slave(sync); */
-            /* wait_slave(sync); */
-        }
-        /* printf("s: %lld\n",rdtsc()-a); */
-        /* if(rd == 0 && i<no_of_rounds){ */
-        /*     notify_slave(sync); */
-        /*     wait_slave(sync); */
-        /* } */
 
         /* 7: j <-- Integerify(X) mod N */
-
-        /* if(rd == 0 && i<no_of_rounds){ */
-        /*     notify_slave(sync); */
-        /*     wait_slave(sync); */
-        /*     /1* printf("server: %d\n",i+1); *1/ */
-        /* } */
         j = integerify(Y, r) & (N - 1);
+
+        if(rd == 0 && i<no_of_rounds){
+            l1_probe(l1, res);
+        }
         blkxor(Y, &V[j * (32 * r)], 128 * r);
         if(rd == 0 && i<no_of_rounds){
-            timings[i+1] = rdtsc();
+            l1_bprobe(l1, res);
+            print_res(res, rmap, nsets);
         }
         blockmix_salsa8(Y, X, Z, r);
-        /* if(rd == 0 && i<no_of_rounds){ */
-        /*     timings[i+1] = rdtsc(); */
-        /*     /1* notify_slave(sync); *1/ */
-        /*     /1* wait_slave(sync); *1/ */
-        /* } */
-
-        /* if(rd == 0 && i==no_of_rounds){ */
-        /*     notify_slave(sync); */
-        /*     wait_slave(sync); */
-        /* } */
-        /* printf("s: %lld\n",rdtsc()-a); */
-        /* if(rd == 0 && i<no_of_rounds){ */
-        /*     notify_slave(sync); */
-        /*     wait_slave(sync); */
-        /* } */
 
     }
-    if(rd == 0){
-        a = 0;
-        for(i=0; i<300; i++){
-            printf("s: %lld %lld\n", timings[i], timings[i]-a);
-            a = timings[i];
-        }
-    }
+    /* sem_close(abarrierSemaphore); */
+    /* sem_close(bbarrierSemaphore); */
 
-    /* 10: B' <-- X */
-    for (k = 0; k < 32 * r; k++)
-        le32enc(&B[4 * k], X[k]);
+
+
+	/* free(res); */
+ 	/* l1_release(l1); */
+
+
+	/* 10: B' <-- X */
+	for (k = 0; k < 32 * r; k++)
+		le32enc(&B[4 * k], X[k]);
 }
 
 
