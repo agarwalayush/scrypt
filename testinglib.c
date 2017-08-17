@@ -158,47 +158,8 @@ int main(int argv, char *argc[]){
                 uint64_t offset = addresses[i] + base;
                 addresses[i] = offset;
             }
-
-            if(fork() == 0){
-                /* cpu_set_t mask; */
-                /* CPU_ZERO(&mask); */
-                /* CPU_SET(4, &mask); */
-
-                /* if(sched_setaffinity(0, sizeof(mask), &mask) != 0) */
-                /*     perror("some error occurred while setting the affinity.\n"); */
-                /* while(*sync_amplifier == 0); */
-                /* while(*sync_amplifier == 1){ */
-                /*     for(i = 0; i<3; i++){ */
-                /*         clflush((void*)addresses[i]); */
-                /*     } */
-                /* } */
-                exit(0);
-            }
-            else {
-                /* int i,j = 0; */
-                /* uint64_t timing[9000]; */
-                /* uint16_t timing_fr[9000]; */
-                /* fr_monitor(fr, (void*)addresses[3]); */
-                /* while(*sync_amplifier == 0); */
-                /* uint64_t b, a = rdtsc(); */
-                /* while(*sync_amplifier == 1){ */
-                /*     /1* if(rdtsc() - a > 10000){ *1/ */
-                /*         timing[j++] = rdtsc(); */
-                /*         fr_probe(fr, &timing_fr[j-1]); */
-                /*         /1* clflush(addresses[3]); *1/ */
-                /*         /1* timings[j-1][1] = rdtsc() - timings[j-1][0]; *1/ */
-                /*         delayloop(5000); */
-                /*         /1* a = timing[j-1]; *1/ */
-                /*     /1* } *1/ */
-                /* } */
-                /* a =0; */
-                /* for(i = 0; i<j; i++){ */
-                /*     printf("c: %lld %d\n", timing[i], timing_fr[i]); */
-                /* } */
-                /* printf("j: %d\n",j); */
-                wait(NULL);
-                exit(0);
-            }
+            wait(NULL);
+            exit(0);
         } else { //prime + probe
             /* printf("amplifier id: %d\n", cid); */
 
@@ -249,61 +210,44 @@ int main(int argv, char *argc[]){
             /* notify_master(sync); */
             *sync_amplifier = 1;
             wait_master(sync);
+            for(i=0; i<5; i++)
+                    l1_probe(l1, res[0]);
             notify_master(sync);
             i = 0;
             while(k<no_of_rounds){
-                /* wait_master(sync); */
-                /*     l1_probe(l1, res[k]); */
-                /* notify_master(sync); */
-
-                    /* printf("client: %d\n",k); */
-                /* wait_master(sync); */
-                /* delayloop(5750); */
                 j = 0;
-                /* while(j++<5750) i = i+j; */
                 if(k%60==0){
                     wait_master(sync);
                     probe_timings[k] = rdtsc();
                     l1_bprobe(l1, res[k]);
                     notify_master(sync);
                     j = 0;
-                    while(j++<3800) i = i+j;
-                    /* delayloop(6000); */
+                    while(j++<3700) i = i+j;
 
-                }else if(k%2==0){
-                    /* wait_master(sync); */
+                }else
+                if(k%2==0){
                     probe_timings[k] = rdtsc();
                     l1_bprobe(l1, res[k]);
                     j = 0;
-                    while(j++<4090) i = i+j;
-                    /* notify_master(sync); */
-                    /* delayloop(6000); */
+                    while(j++<2395) i = i+j;
 
                 } else if(k%2==1){
-                    /* wait_master(sync); */
                     probe_timings[k] = rdtsc();
                     l1_probe(l1, res[k]);
                     j = 0;
-                    while(j++<4090) i = i+j;
-                    /* notify_master(sync); */
+                    while(j++<2395) i = i+j;
                 }
                 else {
                     probe_timings[k] = rdtsc();
                     l1_probe(l1, res[k]);
                 }
 
-                /* notify_master(sync); */
                 a = rdtsc();
                 probe_diff[k] = a - probe_timings[k];
-                /* printf("%u \n", a-probe_timings[k]); */
-                /* notify_master(sync); */
-                /* delayloop(18500); */
                 k++;
             }
 
             printf("%d\n",i);
-            /* wait_master(sync); */
-            /* notify_master(sync); */
             *sync_amplifier = 0;
             sleep(1);
             for(i=0; i<k; i++)

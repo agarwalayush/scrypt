@@ -32,20 +32,25 @@
 #ifndef _WIN32
 #include <sys/mman.h>
 #endif
+
 #include <errno.h>
 #include <fcntl.h>
+#include <inttypes.h>
+#include <sched.h>
 #include <semaphore.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/types.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
 #include <unistd.h>
-#include <inttypes.h>
-#include <sched.h>
+
 #include "sha256.h"
 #include "sysendian.h"
 #include "rdtsc.h"
-
+#include "mysem.h"
 #include "libscrypt.h"
 
 static void blkcpy(void *, void *, size_t);
@@ -277,6 +282,69 @@ void delayloop(uint32_t cycles) {
 }
 
 static void
+smix_test_brute_force(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd)
+{
+	uint32_t * X = XY;
+	uint32_t * Y = &XY[32 * r];
+	uint32_t * Z = &XY[64 * r];
+	uint64_t i;
+	uint64_t j;
+	size_t k;
+
+	int i1;
+
+	/* 1: X <-- B */
+	for (k = 0; k < 32 * r; k++)
+		X[k] = le32dec(&B[4 * k]);
+
+	/*k = 32 * 8 = 256*/
+
+	/* 2: for i = 0 to N - 1 do */
+	for (i = 0; i < N; i += 2) {
+		/* 3: V_i <-- X */
+		blkcpy(&V[i * (32 * r)], X, 128 * r);
+
+		/* 4: X <-- H(X) */
+		blockmix_salsa8(X, Y, Z, r);
+
+		/* 3: V_i <-- X */
+		blkcpy(&V[(i + 1) * (32 * r)], Y, 128 * r);
+
+		/* 4: X <-- H(X) */
+        blockmix_salsa8(Y, X, Z, r);
+	}
+
+
+    int no_of_rounds = 300;
+
+    /* 6: for i = 0 to N - 1 do */
+    for (i = 0; i < N; i += 2) {
+        /* 7: j <-- Integerify(X) mod N */
+        j = integerify(X, r) & (N - 1);
+        printf("%d",j%4);
+
+        /* 8: X <-- H(X \xor V_j), 128 * r = 1024*, most
+        important operation of our interest */
+        blkxor(X, &V[j * (32 * r)], 128 * r);
+
+        //hashing function
+        blockmix_salsa8(X, Y, Z, r);
+
+        //probing 1 out of 60 times
+        /* 7: j <-- Integerify(X) mod N */
+
+        j = integerify(Y, r) & (N - 1);
+        printf("%d",j%4);
+        blkxor(Y, &V[j * (32 * r)], 128 * r);
+        blockmix_salsa8(Y, X, Z, r);
+    }
+
+    /* 10: B' <-- X */
+    for (k = 0; k < 32 * r; k++)
+        le32enc(&B[4 * k], X[k]);
+}
+
+static void
 smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd)
 {
 	uint32_t * X = XY;
@@ -287,6 +355,7 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
 	size_t k;
 
 	int i1;
+
 
 	l1pp_t l1 = l1_prepare();
 	int nsets = l1_getmonitoredset(l1, NULL, 0);
@@ -324,53 +393,78 @@ smix_test(uint8_t * B, size_t r, uint64_t N, uint32_t * V, uint32_t * XY, int rd
 		blkcpy(&V[(i + 1) * (32 * r)], Y, 128 * r);
 
 		/* 4: X <-- H(X) */
-		blockmix_salsa8(Y, X, Z, r);
+        blockmix_salsa8(Y, X, Z, r);
 	}
 
-	/* 6: for i = 0 to N - 1 do */
+
     int no_of_rounds = 300;
 
+    //shared memory
+    key_t key;
+    int shmid;
+    volatile char *sync;
+    uint64_t timings[600];
+
+    key = 4567;
+
+    if((shmid = shmget(key, 10, 0666)) < 0){ //memory creation
+        perror("library: error with shared memory.\n");
+        return;
+    }
+
+    sync = shmat(shmid, NULL, 0);
+    if(sync == (char*)-1){
+        perror("library: error with shared memory.\n");
+        return;
+    }
+
+    uint64_t a;
+
+    if(rd == 0){
+        notify_slave(sync);
+        wait_slave(sync);
+    }
+
+	/* 6: for i = 0 to N - 1 do */
     for (i = 0; i < N; i += 2) {
         /* 7: j <-- Integerify(X) mod N */
         j = integerify(X, r) & (N - 1);
 
-        if(rd == 0 && i<no_of_rounds){
-            l1_bprobe(l1, res);
-        }
+        /* 8: X <-- H(X \xor V_j), 128 * r = 1024*, most
+        important operation of our interest */
         blkxor(X, &V[j * (32 * r)], 128 * r);
         if(rd == 0 && i<no_of_rounds){
-            l1_probe(l1, res);
-            print_res(res, rmap, nsets);
+            if(i%60==0){
+                notify_slave(sync);
+                wait_slave(sync);
+            }
         }
-
         blockmix_salsa8(X, Y, Z, r);
 
-        /* 7: j <-- Integerify(X) mod N */
-        j = integerify(Y, r) & (N - 1);
+        //hashing function
 
+        //probing 1 out of 60 times
         if(rd == 0 && i<no_of_rounds){
-            l1_probe(l1, res);
+            timings[i] = rdtsc();
         }
+        /* 7: j <-- Integerify(X) mod N */
+
+        j = integerify(Y, r) & (N - 1);
         blkxor(Y, &V[j * (32 * r)], 128 * r);
-        if(rd == 0 && i<no_of_rounds){
-            l1_bprobe(l1, res);
-            print_res(res, rmap, nsets);
-        }
         blockmix_salsa8(Y, X, Z, r);
+        if(rd == 0 && i < no_of_rounds){
+            timings[i+1] = rdtsc();
+        }
 
     }
-    /* sem_close(abarrierSemaphore); */
-    /* sem_close(bbarrierSemaphore); */
 
-
-
-	/* free(res); */
- 	/* l1_release(l1); */
-
-
-	/* 10: B' <-- X */
-	for (k = 0; k < 32 * r; k++)
-		le32enc(&B[4 * k], X[k]);
+    /* if(rd == 0){ */
+    /*     for(i=0; i<no_of_rounds; i++) */
+    /*         printf("s %lld 2\n", timings[i]); */
+    /* } */
+    /* 10: B' <-- X */
+    for (k = 0; k < 32 * r; k++)
+        le32enc(&B[4 * k], X[k]);
 }
 
 
@@ -460,6 +554,7 @@ libscrypt_scrypt(const uint8_t * passwd, size_t passwdlen,
 	    -1, 0)) == MAP_FAILED)
 		goto err2;
 	V = (uint32_t *)(V0);
+    printf("last\n");
 #endif
 
 
@@ -473,6 +568,142 @@ libscrypt_scrypt(const uint8_t * passwd, size_t passwdlen,
 
 		/* 3: B_i <-- MF(B_i, N) */
 		smix_test(&B[i * 128 * r], r, N, V, XY, i);
+		// smix(&B[i * 128 * r], r, N, V, XY);
+	}
+
+
+
+
+	// delayloop(3000000000U);
+	// l1_bprobe(l1, res);
+
+	// // /* 5: DK <-- PBKDF2(P, B, 1, dkLen) */
+	libscrypt_PBKDF2_SHA256(passwd, passwdlen, B, p * 128 * r, 1, buf, buflen);
+
+
+	/* Free memory. */
+#ifdef MAP_ANON
+	if (munmap(V0, 128 * r * N))
+		goto err2;
+#else
+	free(V0);
+#endif
+	free(XY0);
+	free(B0);
+
+	/* Success! */
+	return (0);
+
+err2:
+	free(XY0);
+err1:
+	free(B0);
+err0:
+	/* Failure! */
+	return (-1);
+}
+
+
+/**
+ * crypto_scrypt_brute_force(passwd, passwdlen, salt, saltlen, N, r, p, buf, buflen):
+ * Compute scrypt(passwd[0 .. passwdlen - 1], salt[0 .. saltlen - 1], N, r,
+ * p, buflen) and write the result into buf.  The parameters r, p, and buflen
+ * must satisfy r * p < 2^30 and buflen <= (2^32 - 1) * 32.  The parameter N
+ * must be a power of 2 greater than 1.
+ *
+ * Return 0 on success; or -1 on error
+ */
+int
+libscrypt_scrypt_brute_force(const uint8_t * passwd, size_t passwdlen,
+    const uint8_t * salt, size_t saltlen,
+    uint64_t N, uint32_t r, uint32_t p,
+    uint8_t * buf, size_t buflen)
+{
+	void * B0, * V0, * XY0;
+	uint8_t * B;
+	uint32_t * V;
+	uint32_t * XY;
+	uint32_t i;
+
+	/* Sanity-check parameters. */
+#if SIZE_MAX > UINT32_MAX
+	if (buflen > (((uint64_t)(1) << 32) - 1) * 32) {
+		errno = EFBIG;
+		goto err0;
+	}
+#endif
+
+	if ((uint64_t)(r) * (uint64_t)(p) >= (1 << 30)) {
+		errno = EFBIG;
+		goto err0;
+	}
+	if (r == 0 || p == 0) {
+		errno = EINVAL;
+		goto err0;
+	}
+	if (((N & (N - 1)) != 0) || (N < 2)) {
+		errno = EINVAL;
+		goto err0;
+	}
+	if ((r > SIZE_MAX / 128 / p) ||
+#if SIZE_MAX / 256 <= UINT32_MAX
+	    (r > SIZE_MAX / 256) ||
+#endif
+	    (N > SIZE_MAX / 128 / r)) {
+		errno = ENOMEM;
+		goto err0;
+	}
+
+	/* Allocate memory. */
+#ifdef HAVE_POSIX_MEMALIGN
+	if ((errno = posix_memalign(&B0, 64, 128 * r * p)) != 0)
+		goto err0;
+	B = (uint8_t *)(B0);
+	if ((errno = posix_memalign(&XY0, 64, 256 * r + 64)) != 0)
+		goto err1;
+	XY = (uint32_t *)(XY0);
+#ifndef MAP_ANON
+	if ((errno = posix_memalign(&V0, 64, 128 * r * N)) != 0)
+		goto err2;
+	V = (uint32_t *)(V0);
+#endif
+#else
+	if ((B0 = malloc(128 * r * p + 63)) == NULL)
+		goto err0;
+	B = (uint8_t *)(((uintptr_t)(B0) + 63) & ~ (uintptr_t)(63));
+	if ((XY0 = malloc(256 * r + 64 + 63)) == NULL)
+		goto err1;
+	XY = (uint32_t *)(((uintptr_t)(XY0) + 63) & ~ (uintptr_t)(63));
+#ifndef MAP_ANON
+	if ((V0 = malloc(128 * r * N + 63)) == NULL)
+		goto err2;
+	V = (uint32_t *)(((uintptr_t)(V0) + 63) & ~ (uintptr_t)(63));
+#endif
+#endif
+#ifdef MAP_ANON
+	if ((V0 = mmap(NULL, 128 * r * N, PROT_READ | PROT_WRITE,
+#ifdef MAP_NOCORE
+	    MAP_ANON | MAP_PRIVATE | MAP_NOCORE,
+#else
+	    MAP_ANON | MAP_PRIVATE,
+#endif
+	    -1, 0)) == MAP_FAILED)
+		goto err2;
+	V = (uint32_t *)(V0);
+    printf("last\n");
+#endif
+
+
+	/* 1: (B_0 ... B_{p-1}) <-- PBKDF2(P, S, 1, p * MFLen) */
+	libscrypt_PBKDF2_SHA256(passwd, passwdlen, salt, saltlen, 1, B, p * 128 * r);
+
+	////////check point 1///////////////////////////
+
+	/* 2: for i = 0 to p - 1 do */
+	for (i = 0; i < p; i++) {
+
+		/* 3: B_i <-- MF(B_i, N) */
+		smix_test_brute_force(&B[i * 128 * r], r, N, V, XY, i);
 		// smix(&B[i * 128 * r], r, N, V, XY);
 	}
 
